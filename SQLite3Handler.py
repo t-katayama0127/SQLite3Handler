@@ -3,11 +3,9 @@ from logging import getLogger, Handler, LogRecord
 import time
 import datetime as dt
 import traceback
-from typing import Callable, TypeVar
+from typing import Callable, Union
 # import pickle
 # from copy import copy
-
-SQLite3Available = TypeVar('SQLite3 Available')
 
 
 class SQLite3Handler(Handler):
@@ -16,13 +14,13 @@ class SQLite3Handler(Handler):
     class LogCol:
         "represents 1 column of table"
         def __init__(self, name: str,
-                     get_value_func: Callable[[LogRecord], SQLite3Available],
+                     get_value_func: Callable[[LogRecord], Union[int, float, str, dt.datetime]],
                      col_type: str = 'TEXT'):
             self.name = name
             self.type = col_type
             self.get_value_func = get_value_func
         
-        def get_value(self, record :LogRecord) -> SQLite3Available:
+        def get_value(self, record :LogRecord) -> Union[int, float, str, dt.datetime]:
             """
             get value from a LogRecord object
             ---
