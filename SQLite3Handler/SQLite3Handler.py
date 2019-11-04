@@ -3,24 +3,26 @@ from logging import getLogger, Handler, LogRecord
 import time
 import datetime as dt
 import traceback
+import re
 from typing import Callable, Union
-# import pickle
-# from copy import copy
+
+__all__ = ['SQLite3Handler', 'TimedRotatingSQLite3Handler']
 
 
 class SQLite3Handler(Handler):
     "Logging Handler which inserts logs into sqlite3 database"
-    
+
     class LogCol:
         "represents 1 column of table"
+
         def __init__(self, name: str,
                      get_value_func: Callable[[LogRecord], Union[int, float, str, dt.datetime]],
                      col_type: str = 'TEXT'):
             self.name = name
             self.type = col_type
             self.get_value_func = get_value_func
-        
-        def get_value(self, record :LogRecord) -> Union[int, float, str, dt.datetime]:
+
+        def get_value(self, record: LogRecord) -> Union[int, float, str, dt.datetime]:
             """
             get value from a LogRecord object
             ---
@@ -35,10 +37,11 @@ class SQLite3Handler(Handler):
     TABLE_NAME = 'logs'
 
     TABLE_COLUMNS = (
-        LogCol('Time', lambda x: dt.datetime(*time.localtime(x.created)[:6], int(x.msecs * 1000))),
+        LogCol('Time', lambda x: dt.datetime(
+            *time.localtime(x.created)[:6], int(x.msecs * 1000))),
         LogCol('LoggerName', lambda x: x.name),
         LogCol('Level', lambda x: x.levelname),
-        LogCol('FileName', lambda x: x.filename),
+        LogCol('FileName', lambda x: x.pathname),
         LogCol('LineNo', lambda x: x.lineno, 'INTEGER'),
         LogCol('ModuleName', lambda x: x.module),
         LogCol('FuncName', lambda x: x.funcName),
@@ -47,18 +50,20 @@ class SQLite3Handler(Handler):
         LogCol('ThreadID', lambda x: x.thread, 'INTEGER'),
         LogCol('ThreadName', lambda x: x.threadName),
         LogCol('LogMessage', lambda x: x.getMessage()),
-        LogCol('ExceptionType', lambda x: x.exc_info[0].__name__ if x.exc_info else None),
-        LogCol('TraceBack', lambda x: ''.join(traceback.format_exception(*x.exc_info)) if x.exc_info else None)
+        LogCol('ExceptionType',
+               lambda x: x.exc_info[0].__name__ if x.exc_info else None),
+        LogCol('TraceBack', lambda x: ''.join(
+            traceback.format_exception(*x.exc_info)) if x.exc_info else None)
     )
-    
+
     def __init__(self, database: str, level: str = 'INFO'):
         self.database = database
         connection = sqlite3.connect(self.database)
         self.create_table(connection)
         connection.close()
-        
+
         super().__init__(level)
-        
+
     def emit(self, record: LogRecord):
         "this method is called when Logging-Event is triggered"
         connection = sqlite3.connect(self.database)
@@ -82,7 +87,7 @@ class SQLite3Handler(Handler):
             VALUES({', '.join(['?'] * len(values))});
         """, values)
         connection.commit()
-        
+
     def create_table(self, connection: sqlite3.Connection):
         "create TABLE_NAME table if it does not exist"
         cursor = connection.cursor()
@@ -95,37 +100,42 @@ class SQLite3Handler(Handler):
         """)
         connection.commit()
 
-    # Abolished methods
 
-    # def create_debug_table(self, connection):
-    #     "create 'raw_LogRecords' table"
-    #     cursor = connection.cursor()
-    #     cursor.execute('PRAGMA foreign_keys=true;')
-    #     cursor.execute(f"""
-    #         CREATE TABLE IF NOT EXISTS 
-    #         raw_LogRecords(
-    #             id INTEGER PRIMARY KEY,
-    #             record NONE,
-    #             foreign key (id) references {self.TABLE_NAME} (id)
-    #         );
-    #     """)
-    #     connection.commit()
-    
-    # def insert_raw_LogRecord(self, connection, record):
-    #     "insert into 'raw_LogRecords' table"
-    #     cursor = connection.cursor()
-    #     record = copy(record)
-    #     if record.exc_info:
-    #         record.exc_info = (
-    #             record.exc_info[0],
-    #             record.exc_info[1],
-    #             "Because traceback object cannot be pickled, formatted string is stored instead of it. \n\n"
-    #             + ''.join(traceback.format_exception(*record.exc_info))
-    #         )
-    #     pickled_record = pickle.dumps(record)
-    #     idx = cursor.execute(f"SELECT MAX({self.TABLE_NAME}.id) FROM {self.TABLE_NAME}").fetchone()[0]
-    #     cursor.execute("""
-    #         INSERT INTO raw_LogRecords(id, record)
-    #         VALUES (?, ?)
-    #     """, [idx, pickled_record])
-    #     connection.commit()
+class TimedRotatingSQLite3Handler(SQLite3Handler):
+    "Logging Handler which inserts logs into sqlite3 database"
+
+    def __init__(self, database: str, interval: str, level: str = 'INFO'):
+        self.interval = interval
+        dbext_re = '(\.db$|\.sqlite$|\.sqlite3$)'
+        dbname = re.sub(dbext_re, '', database)
+        dbext = re.search(dbext_re, database)
+        dbext = dbext.string[dbext.start(): dbext.end()
+                             ] if dbext else '.sqlite3'
+        if interval == 'year':
+            timeformat = '_%Y'
+        elif interval == 'month':
+            timeformat = '_%Y-%m'
+        elif interval == 'day':
+            timeformat = '_%Y-%m-%d'
+        elif interval == 'hour':
+            timeformat = '_%Y-%m-%d_%H'
+        elif interval == 'minute':
+            timeformat = '_%Y-%m-%d_%H:%M'
+        else:
+            timeformat = ''
+        self.dbformat = dbname + timeformat + dbext
+
+        # Handler.__init__(self, level)
+        super(SQLite3Handler, self).__init__(level)
+
+    def emit(self, record: LogRecord):
+        date = dt.datetime(*time.localtime(record.created)[:6])
+        database = date.strftime(self.dbformat)
+        connection = sqlite3.connect(database)
+        try:
+            self.create_table(connection)
+            self.insert_log(connection, record)
+        except Exception as e:
+            self.handleError(record)
+        finally:
+            connection.close()

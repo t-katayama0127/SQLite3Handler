@@ -1,1 +1,1 @@
-from .SQLite3Handler import SQLite3Handler
+from .SQLite3Handler import *
